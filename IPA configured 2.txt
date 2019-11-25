@@ -1,0 +1,188 @@
+#############IPA SERVER##############
+AD Netbios Name = EXAMPLE
+IPA Netbios Name = IPAEXAMPLE
+
+     OPEN PORT :
+     TCP: 464, 80, 88, 389
+     UDP: 464, 99, 123 (if NTP enabled)
+
+yum install ipa-server ipa-server-dns ipa-server-trust-ad 
+
+systemctl start named && systemctl status named
+
+ipa-server-install --domain=lab.example.com --realm=LAB.EXAMPLE.COM --ds-password=Redhat123 --admin-password=Redhat123 --ip-address=10.10.10.20(ip IDM) --hostname=idm.lab.example.com --setup-dns --no-forwarders --mkhomedir --reverse-zone=10.10.10.in-addr.arpa.
+
+kinit admin
+
+ipa dnsforwardzone-add --skip-overlap-check example.com --forwarder=10.10.10.21(ip AD) --forward-policy=only
+
+systemctl restart named-pkcs11; systemctl status named-pkcs11
+
+########TRUST TO ACTIVE DIRECTORY#######
+dnscmd 127.0.0.1 /RecordAdd ^
+example.com idm.lab.example.com. ^
+A 10.10.10.22 (ip idm)
+
+dnscmd 127.0.0.1 /RecordAdd ^
+example.com ^
+lab.example.com. NS ^
+idm.lab.example.com.
+
+
+ipa-adtrust-install --netbios-name=IPAEXAMPLE -a Redhat123
+
+vi nsslapd-listenhost.ldif
+dn: cn=config
+changetype: modify
+replace: nsslapd-listenhost
+nsslapd-listenhost: 0.0.0.0
+
+ldapmodify -a -x -h directoryserver -p 389 -D cn="Directory Manager" -w password -f nsslapd-listenhost.ldif
+
+service dirsrv restart
+
+netstat -tnlp
+
+vi nsslapd-securelistenhost.ldif
+dn: cn=config
+changetype: modify
+replace: nsslapd-securelistenhost
+nsslapd-securelistenhost: 0.0.0.0 
+
+ldapmodify -a -x -h directoryserver -p 389 -D cn="Directory Manager" -w password -f nsslapd-securelistenhost.ldif
+
+service dirsrv restart
+
+netstat -tnlp
+
+ipa trust-add --type=ad example.com --admin Administrator --two-way=true --password
+OR
+ipa trust-add --type=ad example.com --admin Administrator --external=true --password --two-way=true
+
+authconfig --enablemkhomedir --update
+
+##############REPLICA##############
+Note : join server become client before run this command
+yum install ipa-server ipa-server-dns
+
+kinit admin
+
+ipa-join
+
+vi /etc/hosts (master & replica)
+10.10.10.20 idm.lab.example.com
+10.10.10.22 replica.lab.example.com 
+
+ipa-replica-install
+
+ipa-ca-install
+
+##############IPA CLIENT##############
+ipa-client-install --server=idm.lab.example.com --domain=lab.example.com --realm=LAB.EXAMPLE.COM --mkhomedir
+
+authconfig --enablemkhomedir --update
+
+vi /etc/sssd/sssd.conf
+[domain/ipa.example/ad.example]
+use_fully_qualified_names = False
+
+[sssd]
+services = sudo, nss, ifp, pam, ssh, pac
+domain_resolution_order = ad.example, ipa.example
+
+[nss]
+homedir_substring = /home
+entry_cache_timeout = 300
+entry_cache_nowait_percentage = 75
+memcache_timeout = 600
+
+
+vi /etc/krb5.conf
+dns_lookup_realm = true
+dns_lookup_kdc = true
+
+service sssd stop; rm -rf /var/lib/sss/db/* ; service sssd start;service sssd status
+OR
+sss_cache -E
+
+-make user can use sudo
+https://www.youtube.com/watch?v=AR4pr-foT8s
+systemctl restart messagebus
+systemctl restart oddjobd
+
+vi /etc/sudo-ldap.conf (client)
+uri ldap://idm.lab.example.net (master idm host)
+ssl start_tls
+binddn uid=sudo,cn=sysaccounts,cn=etc,dc=lab,dc=example,dc=net
+bindpw Redhat123
+sudoers_base ou=sudoers,dc=lab,dc=example,dc=net
+tls_cacert /etc/ipa/ca.crt
+sudoers_debug 2
+
+kinit admin
+ldappasswd -Y GSSAPI -S uid=sudo,cn=sysaccounts,cn=etc,dc=lab,dc=example,dc=net
+New Password: Redhat123
+
+
+
+***IPA CHECK TOPOLOGY
+ipa topologysegment-find domain
+
+ipa topologysegment-find ca
+
+***IPA ADD TOPOLOGY SEGEMENT
+ipa topologysegment-add domain ipa3.example.com-to-ipa4.example.com \
+    --leftnode=ipa3.example.com --rightnode=ipa4.example.com
+
+***IPA CHECK
+ipa user-find
+ipa idrange-find
+
+***KERBEROS
+-show krb user list
+klist -kt /etc/dirsrv/ds.keytab
+
+#####sudo config#####
+https://www.youtube.com/watch?v=AR4pr-foT8s
+systemctl restart messagebus
+systemctl restart oddjobd
+
+vi /etc/sudo-ldap.conf (client)
+uri ldap://idm.lab.example.net (master idm host)
+ssl start_tls
+binddn uid=sudo,cn=sysaccounts,cn=etc,dc=lab,dc=example,dc=net
+bindpw Redhat123
+sudoers_base ou=sudoers,dc=lab,dc=example,dc=net
+tls_cacert /etc/ipa/ca.crt
+sudoers_debug 2
+
+kinit admin
+ldappasswd -Y GSSAPI -S uid=sudo,cn=sysaccounts,cn=etc,dc=lab,dc=example,dc=net
+New Password: Redhat123
+
+####setting SSSD####
+https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/5/html/deployment_guide/configuring_services
+
+####EXTERNAL GROUP####
+https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8-beta/html-single/installing_identity_management_and_access_control/index#planning-trust-non-posix-external-groups-and-security-id-mapping-fin
+
+https://docs.fedoraproject.org/en-US/Fedora/18/html/FreeIPA_Guide/trust-groups.html
+
+####LOGIN AD USER WITHOUT USE DOMAIN AD####
+https://docs.pagure.org/SSSD.sssd/design_pages/shortnames.html
+vi /etc/sssd/sssd.conf
+[sssd]
+...
+domain_resolution_order = ad.example, ipa.example
+...
+
+[sssd]
+...
+domain_resolution_order = ad.example, ipa.example
+...
+
+####ERROR CIFS WHEN DO TRUST TO AD####
+ipa: ERROR: CIFS server communication error: code "3221225506", message "{Access Denied} A process has requested access to an object but has not been granted those access rights." (both may be "None")
+
+https://lists.fedorahosted.org/archives/list/freeipa-users@lists.fedorahosted.org/thread/PGJ7NL5HEEVDEU3XKRZQWYD2WZTSTUPQ/
+http://gsr-linux.blogspot.com/2010/06/enforcing-directory-server-instances-to.html

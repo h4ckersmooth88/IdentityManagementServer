@@ -1,0 +1,207 @@
+##############IPA SERVER##############
+AD Netbios Name = EXAMPLE
+IPA Netbios Name = IPAEXAMPLE
+
+     OPEN PORT :
+     TCP: 464, 80, 88, 389
+     UDP: 464, 99, 123 (if NTP enabled)
+
+yum install ipa-server ipa-server-dns ipa-server-trust-ad 
+
+systemctl start named && systemctl status named
+
+*jika belum ada, install terlebih dahulu (yum install bind bind-utils)
+http://linuxpitstop.com/dns-server-setup-using-bind-9-on-centos-7-linux/
+
+ipa-server-install --domain=lab.example.net --realm=LAB.EXAMPLE.net --ds-password=Redhat123 --admin-password=Redhat123 --ip-address=10.10.10.20(ip IDM) --hostname=idm.lab.example.net --setup-dns --no-forwarders --mkhomedir --reverse-zone=10.10.10.in-addr.arpa.
+
+######edit########################
+
+default_realm = EXAMPLE.NET
+dns_lookup_realm = true
+dns_lookup_kdc = true
+
+kinit admin
+
+ipa dnsforwardzone-add --skip-overlap-check example.net --forwarder=10.10.10.21(ip AD) --forward-policy=only
+
+note : if error add dnsforward.. changed in vi /etc/named.conf  :
+dnssec-enable no;
+        dnssec-validation yes;
+
+systemctl restart named-pkcs11; systemctl status named-pkcs11
+
+################WINDOWS AD####################
+#using command :
+
+dnscmd 127.0.0.1 /RecordAdd ^
+example.net idm.lab.example.net. ^
+A 10.10.10.22
+
+dnscmd 127.0.0.1 /RecordAdd ^
+example.net ^
+lab.example.net. NS ^
+idm.lab.example.net.
+
+###############################################
+
+ipa-adtrust-install --netbios-name=LABEXAMPLE -a Redhat123
+
+ansible-playbook install_ip_master.yml
+
+ipa trust-add --type=ad example.net --admin Administrator --password
+
+###############################
+check :
+
+nslookup example.net
+
+kvno -S host ad.example.net
+
+kvno -S host idm.lab.example.net
+
+kinit andre@example.net (user AD)
+
+################################
+
+authconfig --enablemkhomedir --update
+
+##############IPA CLIENT##############
+
+yum install ipa-server ipa-server-dns
+
+ipa-client-install --server=idm.lab.example.net --domain=lab.example.net --realm=LAB.EXAMPLE.NET --mkhomedir
+
+authconfig --enablemkhomedir --update
+
+vi /etc/sssd/sssd.conf
+services = nss, sudo, pam, ssh, pac, ifp	#add pac
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------.-+95555
+vi /etc/krb5.conf
+default_realm = EXAMPLE.NET
+dns_lookup_realm = true
+dns_lookup_kdc = true
+
+systemctl restart sssd
+
+vi /etc/hosts (master & replica)
+10.10.10.20 idm.lab.example.net
+10.10.10.22 replica.lab.example.net 
+
+##############REPLICA##############
+(Make IPA CLIENT first)
+
+kinit admin
+
+ipa-join
+
+GUI
+
+Network Services -> DNS Zones -> 1.168.192.in-addr.arpa.(example) ->
+
+ipa-replica-install
+
+ipa-ca-install
+
+vi /etc/sssd/sssd.conf
+[domain/ipaexample.net]
+subdomains_provider = ipa
+[sssd]
+services = nss, pam, ssh, pac  
+[nss]
+filter_groups = root
+filter_users = root
+entry_cache_timeout = 300
+entry_cache_nowait_percentage = 75
+
+service sssd stop; rm -f /var/lib/sss/db/* ; service sssd start;service sssd status
+
+vi /etc/krb5.conf
+dns_lookup_realm = true
+dns_lookup_kdc = true 
+
+
+
+***IPA CHECK TOPOLOGY
+ipa topologysegment-find domain
+
+ipa topologysegment-find ca
+
+***IPA ADD TOPOLOGY SEGEMENT
+ipa topologysegment-add domain ipa3.example.net-to-ipa4.example.net \
+    --leftnode=ipa3.example.net --rightnode=ipa4.example.net
+
+***IPA CHECK
+ipa user-find
+ipa idrange-find
+
+***KERBEROS
+-show krb user list
+klist -kt /etc/dirsrv/ds.keytab
+
+
+Guided Exercise: Preparing for IdM Recovery
+
+###############################
+PADA SAAT MENAMBAHKAN CLIENT PASTIKAN BISA :
+[root@client2 ~]# nslookup idm.lab.example.net
+Server:         192.168.1.87
+Address:        192.168.1.87#53
+
+Name:   idm.lab.example.net
+Address: 192.168.1.87
+
+[root@client2 ~]# nslookup replica.lab.example.net
+Server:         192.168.1.87
+Address:        192.168.1.87#53
+
+Name:   replica.lab.example.net
+Address: 192.168.1.85
+
+[root@client2 ~]# dig +short -x 192.168.1.87
+idm.lab.example.net.
+[root@client2 ~]# dig +short -x 192.168.1.85
+
+
+##########################################
+1. edit :
+vi /etc/sssd/sssd.conf
+[domain/ipaexample.com]
+subdomains_provider = ipa
+[sssd]
+services = sudo, nss, ifp, pam, ssh, pac 
+[nss]
+													#filter_groups = root
+													#filter_users = root
+entry_cache_timeout = 300
+entry_cache_nowait_percentage = 75
+memcache_timeout = 600
+vi /etc/krb5.conf
+dns_lookup_realm = true
+dns_lookup_kdc = true
+
+2. jalankan :
+service sssd stop; rm -f /var/lib/sss/db/* ; service sssd start;service sssd status
+
+3. tambahkan di /etc/hosts:
+ip hostname localhost, example
+192.168.4.2 replica2.lab.example.net localhost (replica)
+192.168.1.87 idm.lab.example.net (server idm)
+
+
+ditambahkan di /etc/resolv.conf (jika tidak bisa ssh namun bisa id)
+ip ad dan ip idm
+192.168.1.175
+192.168.1.85
+
+
+ipactl status
+
+untuk client harus di promote terlebih dahulu agar bisa diakses melalui web
+#########################################################################
+ERROR :
+LDAP Error: Connect error: TLS error -8054:You are attempting to import a cert with the same issuer/serial as an existing cert, but that is not the same cert.
+LDAP Error: Connect error: TLS error -8054:You are attempting to import a cert with the same issuer/serial as an existing cert, but that is not the same cert.
+SOLUTION :
+rm -rf /etc/ipa/ca.crt
